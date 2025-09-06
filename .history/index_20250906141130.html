@@ -1,0 +1,331 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>AR Drawing Overlay</title>
+  <style>
+    :root {
+      --ui-bg: rgba(20, 20, 20, 0.72);
+      --ui-blur: saturate(150%) blur(10px);
+      --accent: #4f46e5;
+      --text: #f8fafc;
+      --muted: #cbd5e1;
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; margin: 0; font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, Noto Sans, Arial, "Apple Color Emoji", "Segoe UI Emoji"; background: #000; color: var(--text); }
+    #app { position: fixed; inset: 0; overflow: hidden; }
+
+    /* Camera layer */
+    #camWrap { position: absolute; inset: 0; background: #000; }
+    #video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; transform: scaleX(var(--mirror, 1)); }
+
+    /* Image overlay */
+    #overlayWrap { position: absolute; inset: 0; touch-action: none; }
+    #overlayImg { position: absolute; top: 50%; left: 50%; max-width: none; max-height: none; transform-origin: center center; pointer-events: none; /* image shouldn’t block dragging */ }
+
+    /* UI */
+    #ui { position: absolute; left: 50%; transform: translateX(-50%); bottom: env(safe-area-inset-bottom); width: min(980px, 95vw); padding: 12px; }
+    .panel { display: grid; gap: 10px; grid-template-columns: 1fr; background: var(--ui-bg); -webkit-backdrop-filter: var(--ui-blur); backdrop-filter: var(--ui-blur); border: 1px solid rgba(255,255,255,.08); border-radius: 16px; padding: 12px; }
+    .row { display: grid; gap: 10px; grid-template-columns: repeat(12, 1fr); align-items: center; }
+    .row > * { min-width: 0; }
+    .label { grid-column: span 3; color: var(--muted); font-size: 14px; }
+    .control { grid-column: span 9; }
+    @media (max-width: 640px) {
+      .label { grid-column: span 4; }
+      .control { grid-column: span 8; }
+    }
+    input[type="range"] { width: 100%; }
+    .group { display: flex; gap: 8px; flex-wrap: wrap; }
+    button, .btn { cursor: pointer; appearance: none; border: 1px solid rgba(255,255,255,.16); background: rgba(255,255,255,.06); color: var(--text); padding: 8px 12px; border-radius: 10px; font-size: 14px; }
+    button:hover { background: rgba(255,255,255,.1); }
+    button.primary { border-color: color-mix(in srgb, var(--accent), white 10%); background: color-mix(in srgb, var(--accent), black 70%); }
+    .pill { padding: 4px 8px; font-size: 12px; border-radius: 999px; border: 1px solid rgba(255,255,255,.2); color: var(--muted); }
+
+    /* Top bar */
+    #topBar { position: absolute; top: env(safe-area-inset-top); left: 50%; transform: translateX(-50%); width: min(980px, 95vw); padding: 12px; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+    #topBarInner { display: flex; gap: 8px; align-items: center; background: var(--ui-bg); -webkit-backdrop-filter: var(--ui-blur); backdrop-filter: var(--ui-blur); border: 1px solid rgba(255,255,255,.08); border-radius: 14px; padding: 8px; width: 100%; }
+    #brand { font-weight: 650; letter-spacing: .2px; padding: 6px 10px; border-radius: 10px; border: 1px solid rgba(255,255,255,.1); background: rgba(255,255,255,.04); }
+    input[type="file"] { display: none; }
+    .fileLabel { border: 1px dashed rgba(255,255,255,.25); padding: 8px 12px; border-radius: 10px; cursor: pointer; }
+
+    /* Helper badge */
+    #hint { position: absolute; right: 12px; top: calc(env(safe-area-inset-top) + 12px); opacity: .9; }
+
+    /* Toast */
+    #toast { position: absolute; left: 50%; transform: translateX(-50%); top: calc(env(safe-area-inset-top) + 56px); background: var(--ui-bg); -webkit-backdrop-filter: var(--ui-blur); backdrop-filter: var(--ui-blur); border: 1px solid rgba(255,255,255,.1); padding: 10px 14px; border-radius: 12px; display: none; }
+  </style>
+</head>
+<body>
+  <div id="app">
+    <div id="camWrap">
+      <video id="video" playsinline muted autoplay></video>
+    </div>
+
+    <div id="overlayWrap">
+      <img id="overlayImg" alt="overlay" />
+    </div>
+
+    <div id="topBar">
+      <div id="topBarInner">
+        <span id="brand">AR Drawing</span>
+        <label class="fileLabel" for="file">Обрати зображення</label>
+        <input id="file" type="file" accept="image/*" />
+        <span class="pill" id="camStatus">Камера: ініціалізація…</span>
+        <div class="group" style="margin-left:auto">
+          <button id="toggleCam">Перемкнути камеру</button>
+          <button id="pauseCam">Пауза</button>
+          <button id="hideUI">Сховати панелі</button>
+          <button id="reset">Скинути</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="ui">
+      <div class="panel">
+        <div class="row">
+          <div class="label">Прозорість</div>
+          <div class="control"><input id="opacity" type="range" min="0" max="100" value="50" /></div>
+        </div>
+        <div class="row">
+          <div class="label">Масштаб</div>
+          <div class="control"><input id="scale" type="range" min="10" max="400" value="100" /></div>
+        </div>
+        <div class="row">
+          <div class="label">Підганяти</div>
+          <div class="control group">
+            <button data-fit="cover" class="fitBtn primary">Cover</button>
+            <button data-fit="contain" class="fitBtn">Contain</button>
+          </div>
+        </div>
+        <div class="row">
+          <div class="label">Опції</div>
+          <div class="control group">
+            <label class="btn"><input id="mirror" type="checkbox" /> Дзеркалити</label>
+            <label class="btn"><input id="lockImg" type="checkbox" /> Заблокувати зображення</label>
+          </div>
+        </div>
+        <div class="row">
+          <div class="label">Позиція</div>
+          <div class="control group">
+            <button class="nudge" data-x="-10" data-y="0">←</button>
+            <button class="nudge" data-x="10" data-y="0">→</button>
+            <button class="nudge" data-x="0" data-y="-10">↑</button>
+            <button class="nudge" data-x="0" data-y="10">↓</button>
+            <button id="center">Центр</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div id="hint" class="pill">Підказка: перетягуйте зображення одним пальцем, масштабуйте двома</div>
+    <div id="toast"></div>
+  </div>
+
+  <script>
+    const $ = sel => document.querySelector(sel);
+    const video = $('#video');
+    const camStatus = $('#camStatus');
+    const toggleCamBtn = $('#toggleCam');
+    const pauseCamBtn = $('#pauseCam');
+    const fileInput = $('#file');
+    const overlayImg = $('#overlayImg');
+    const overlayWrap = $('#overlayWrap');
+    const opacity = $('#opacity');
+    const scale = $('#scale');
+    const mirror = $('#mirror');
+    const lockImg = $('#lockImg');
+    const resetBtn = $('#reset');
+    const fitBtns = [...document.querySelectorAll('.fitBtn')];
+    const nudgeBtns = [...document.querySelectorAll('.nudge')];
+    const centerBtn = $('#center');
+    const toast = $('#toast');
+    const topBarEl = $('#topBar');
+    const uiPanel = $('#ui');
+    const hintEl = $('#hint');
+    const hideUIBtn = $('#hideUI');
+
+    let currentStream = null;
+    let usingBackCamera = true; // try environment first
+
+    let imgState = {
+      x: 0, y: 0, scale: 1, rotation: 0,
+    };
+
+    function showToast(msg, ms=1600) {
+      toast.textContent = msg;
+      toast.style.display = 'block';
+      clearTimeout(showToast._t);
+      showToast._t = setTimeout(()=> toast.style.display='none', ms);
+    }
+
+    async function startCamera() {
+      try {
+        if (currentStream) currentStream.getTracks().forEach(t => t.stop());
+        const constraints = { video: { facingMode: usingBackCamera ? { ideal: 'environment' } : 'user' }, audio: false };
+        const stream = await navigator.mediaDevices.getUserMedia(constraints);
+        currentStream = stream;
+        video.srcObject = stream;
+        await video.play();
+        camStatus.textContent = `Камера: ${usingBackCamera ? 'тилова' : 'фронтальна'}`;
+      } catch (err) {
+        console.error(err);
+        camStatus.textContent = 'Камера: помилка';
+        showToast('Дозвольте доступ до камери в браузері');
+      }
+    }
+
+    toggleCamBtn.addEventListener('click', () => {
+      usingBackCamera = !usingBackCamera;
+      startCamera();
+    });
+
+    let paused = false;
+    pauseCamBtn.addEventListener('click', () => {
+      paused = !paused;
+      if (currentStream) currentStream.getVideoTracks().forEach(t => t.enabled = !paused);
+      pauseCamBtn.textContent = paused ? 'Продовжити' : 'Пауза';
+    });
+
+    // Hide/Show UI panels
+    let uiHidden = false;
+    function setUIHidden(hidden) {
+      uiHidden = hidden;
+      const disp = hidden ? 'none' : '';
+      topBarEl.style.display = disp;
+      uiPanel.style.display = disp;
+      hintEl.style.display = hidden ? 'none' : '';
+      if (hidden) toast.style.display = 'none';
+    }
+    function awaitTouchToShow() {
+      const onTouch = (e) => {
+        e.stopPropagation();
+        e.preventDefault();
+        setUIHidden(false);
+        document.removeEventListener('pointerdown', onTouch, true);
+        document.removeEventListener('touchstart', onTouch, true);
+      };
+      document.addEventListener('pointerdown', onTouch, true);
+      document.addEventListener('touchstart', onTouch, true);
+    }
+    hideUIBtn.addEventListener('click', () => {
+      setUIHidden(true);
+      awaitTouchToShow();
+    });
+
+    // Overlay controls
+    function applyOverlayTransform() {
+      overlayImg.style.opacity = (+opacity.value / 100).toFixed(2);
+      const s = +scale.value / 100 * imgState.scale;
+      overlayImg.style.transform = `translate(-50%, -50%) translate(${imgState.x}px, ${imgState.y}px) scale(${s}) rotate(${imgState.rotation}deg)`;
+    }
+
+    opacity.addEventListener('input', applyOverlayTransform);
+    scale.addEventListener('input', applyOverlayTransform);
+
+    mirror.addEventListener('change', () => {
+      document.documentElement.style.setProperty('--mirror', mirror.checked ? '-1' : '1');
+    });
+
+    resetBtn.addEventListener('click', () => {
+      imgState = { x:0, y:0, scale:1, rotation:0 };
+      opacity.value = 50; scale.value = 100; applyOverlayTransform();
+      setFit(currentFit);
+    });
+
+    // Fit modes using object-fit emulation (by sizing img to viewport width/height)
+    let currentFit = 'cover';
+    function setFit(mode) {
+      currentFit = mode;
+      fitBtns.forEach(b => b.classList.toggle('primary', b.dataset.fit === mode));
+      const vw = window.innerWidth, vh = window.innerHeight;
+      if (!overlayImg.naturalWidth) return;
+      const iw = overlayImg.naturalWidth, ih = overlayImg.naturalHeight;
+      const sw = vw / iw, sh = vh / ih;
+      let f = mode === 'cover' ? Math.max(sw, sh) : Math.min(sw, sh);
+      // base scale so that image fits, then user scale multiplies via #scale
+      imgState.scale = f;
+      imgState.x = 0; imgState.y = 0;
+      applyOverlayTransform();
+    }
+
+    fitBtns.forEach(b => b.addEventListener('click', () => setFit(b.dataset.fit)));
+
+    nudgeBtns.forEach(b => b.addEventListener('click', () => {
+      imgState.x += +b.dataset.x; imgState.y += +b.dataset.y; applyOverlayTransform();
+    }));
+    centerBtn.addEventListener('click', () => { imgState.x = 0; imgState.y = 0; applyOverlayTransform(); });
+
+    // Drag / pinch gestures
+    let activePointers = new Map();
+    let base = null; // {x,y,dist,angle, state}
+
+    function getDist(a, b) {
+      const dx = b.clientX - a.clientX, dy = b.clientY - a.clientY; return Math.hypot(dx, dy);
+    }
+    function onPointerDown(e) {
+      if (lockImg.checked) return;
+      overlayWrap.setPointerCapture(e.pointerId);
+      activePointers.set(e.pointerId, { clientX: e.clientX, clientY: e.clientY });
+      if (activePointers.size === 1) {
+        base = { x: imgState.x, y: imgState.y, scale: imgState.scale, rotation: imgState.rotation, start: activePointers.get(e.pointerId) };
+      } else if (activePointers.size === 2) {
+        const [p1, p2] = [...activePointers.values()];
+        base = { ...base, dist: getDist(p1, p2) };
+      }
+    }
+    function onPointerMove(e) {
+      if (lockImg.checked) return;
+      if (!activePointers.has(e.pointerId)) return;
+      activePointers.set(e.pointerId, { clientX: e.clientX, clientY: e.clientY });
+      if (activePointers.size === 1 && base) {
+        const p = [...activePointers.values()][0];
+        imgState.x = base.x + (p.clientX - base.start.clientX);
+        imgState.y = base.y + (p.clientY - base.start.clientY);
+        applyOverlayTransform();
+      }
+      if (activePointers.size === 2 && base && base.dist) {
+        const [p1, p2] = [...activePointers.values()];
+        const dist = getDist(p1, p2);
+        imgState.scale = Math.max(0.05, base.scale * (dist / base.dist));
+        applyOverlayTransform();
+      }
+    }
+    function onPointerUp(e) {
+      if (!activePointers.has(e.pointerId)) return;
+      activePointers.delete(e.pointerId);
+      if (activePointers.size === 0) base = null;
+    }
+
+    overlayWrap.addEventListener('pointerdown', onPointerDown);
+    overlayWrap.addEventListener('pointermove', onPointerMove);
+    overlayWrap.addEventListener('pointerup', onPointerUp);
+    overlayWrap.addEventListener('pointercancel', onPointerUp);
+
+    // Load chosen image
+    fileInput.addEventListener('change', async (e) => {
+      const file = e.target.files && e.target.files[0];
+      if (!file) return;
+      const url = URL.createObjectURL(file);
+      overlayImg.onload = () => {
+        URL.revokeObjectURL(url);
+        setFit(currentFit);
+        applyOverlayTransform();
+        showToast('Зображення завантажено');
+      };
+      overlayImg.src = url;
+    });
+
+    // Resize handling
+    window.addEventListener('resize', () => setFit(currentFit));
+
+    // Init
+    (async function init(){
+      opacity.value = 50; scale.value = 100; applyOverlayTransform();
+      await startCamera();
+      // iOS requires a user gesture sometimes; provide a hint
+      video.addEventListener('pause', () => showToast('Торкніться екрану, щоб увімкнути камеру'));
+    })();
+  </script>
+</body>
+</html>
